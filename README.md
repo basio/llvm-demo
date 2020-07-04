@@ -24,8 +24,8 @@ Building with CMake
 
         cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=True \
             -DLLVM_DIR=</path/to/LLVM/build>/lib/cmake/llvm/ ../llvm-demo
-
-      cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=True 
+        
+        cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=True 
         -DLLVM_DIR=/Users/user/Documents/GitHub/pprof/llvm-project  ../
 
 
