@@ -1,6 +1,12 @@
 
-#include "llvm/ADT/Triple.h"
+#include <memory>
+#include <string>
+
+#include "DynamicCallCounter.h"
+#include "StaticCallCounter.h"
+#include "config.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/Triple.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/AsmParser/Parser.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
@@ -10,20 +16,20 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/IRPrintingPasses.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/MC/SubtargetFeature.h"
-#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Support/ManagedStatic.h"
-#include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/SourceMgr.h"
@@ -34,28 +40,18 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/Scalar.h"
 
-#include <memory>
-#include <string>
-
-#include "DynamicCallCounter.h"
-#include "StaticCallCounter.h"
-
-#include "config.h"
-
 using namespace llvm;
+using llvm::legacy::PassManager;
+using llvm::sys::ExecuteAndWait;
+using llvm::sys::findProgramByName;
 using std::string;
 using std::unique_ptr;
 using std::vector;
-using llvm::sys::ExecuteAndWait;
-using llvm::sys::findProgramByName;
-using llvm::legacy::PassManager;
-
 
 enum class AnalysisType {
   STATIC,
   DYNAMIC,
 };
-
 
 static cl::OptionCategory callCounterCategory{"call counter options"};
 
@@ -68,21 +64,15 @@ static cl::opt<string> inPath{cl::Positional,
 
 static cl::opt<AnalysisType> analysisType{
     cl::desc{"Select analyis type:"},
-    cl::values(clEnumValN(AnalysisType::STATIC,
-                          "static",
+    cl::values(clEnumValN(AnalysisType::STATIC, "static",
                           "Count static direct calls."),
-               clEnumValN(AnalysisType::DYNAMIC,
-                          "dynamic",
-                          "Count dynamic direct calls.")
-               ),
-    cl::Required,
-    cl::cat{callCounterCategory}};
+               clEnumValN(AnalysisType::DYNAMIC, "dynamic",
+                          "Count dynamic direct calls.")),
+    cl::Required, cl::cat{callCounterCategory}};
 
-static cl::opt<string> outFile{"o",
-                               cl::desc{"Filename of the instrumented program"},
-                               cl::value_desc{"filename"},
-                               cl::init(""),
-                               cl::cat{callCounterCategory}};
+static cl::opt<string> outFile{
+    "o", cl::desc{"Filename of the instrumented program"},
+    cl::value_desc{"filename"}, cl::init(""), cl::cat{callCounterCategory}};
 
 static cl::opt<char> optLevel{
     "O",
@@ -92,24 +82,18 @@ static cl::opt<char> optLevel{
     cl::init('2'),
     cl::cat{callCounterCategory}};
 
-static cl::list<string> libPaths{"L",
-                                 cl::Prefix,
-                                 cl::desc{"Specify a library search path"},
-                                 cl::value_desc{"directory"},
-                                 cl::cat{callCounterCategory}};
+static cl::list<string> libPaths{
+    "L", cl::Prefix, cl::desc{"Specify a library search path"},
+    cl::value_desc{"directory"}, cl::cat{callCounterCategory}};
 
-static cl::list<string> libraries{"l",
-                                  cl::Prefix,
-                                  cl::desc{"Specify libraries to link against"},
-                                  cl::value_desc{"library prefix"},
-                                  cl::cat{callCounterCategory}};
+static cl::list<string> libraries{
+    "l", cl::Prefix, cl::desc{"Specify libraries to link against"},
+    cl::value_desc{"library prefix"}, cl::cat{callCounterCategory}};
 
-
-static void
-compile(Module& m, StringRef outputPath) {
+static void compile(Module& m, StringRef outputPath) {
   string err;
 
-  Triple triple        = Triple(m.getTargetTriple());
+  Triple triple = Triple(m.getTargetTriple());
   Target const* target = TargetRegistry::lookupTarget(MArch, triple, err);
   if (!target) {
     report_fatal_error("Unable to find target:\n " + err);
@@ -120,22 +104,25 @@ compile(Module& m, StringRef outputPath) {
     default:
       report_fatal_error("Invalid optimization level.\n");
     // No fall through
-    case '0': level = CodeGenOpt::None; break;
-    case '1': level = CodeGenOpt::Less; break;
-    case '2': level = CodeGenOpt::Default; break;
-    case '3': level = CodeGenOpt::Aggressive; break;
+    case '0':
+      level = CodeGenOpt::None;
+      break;
+    case '1':
+      level = CodeGenOpt::Less;
+      break;
+    case '2':
+      level = CodeGenOpt::Default;
+      break;
+    case '3':
+      level = CodeGenOpt::Aggressive;
+      break;
   }
 
   string FeaturesStr;
   TargetOptions options = InitTargetOptionsFromCodeGenFlags();
-  unique_ptr<TargetMachine> machine(
-      target->createTargetMachine(triple.getTriple(),
-                                  MCPU,
-                                  FeaturesStr,
-                                  options,
-                                  getRelocModel(),
-                                  llvm::NoneType::None,
-                                  level));
+  unique_ptr<TargetMachine> machine(target->createTargetMachine(
+      triple.getTriple(), MCPU, FeaturesStr, options, getRelocModel(),
+      llvm::NoneType::None, level));
   assert(machine && "Could not allocate target machine!");
 
   if (FloatABIForCalls != FloatABI::Default) {
@@ -161,17 +148,18 @@ compile(Module& m, StringRef outputPath) {
   {  // Bound this scope
     raw_pwrite_stream* os(&out->os());
 
-    FileType = TargetMachine::CGFT_ObjectFile;
+    FileType = /*TargetMachine::*/ CGFT_ObjectFile;
     std::unique_ptr<buffer_ostream> bos;
     if (!out->os().supportsSeeking()) {
       bos = std::make_unique<buffer_ostream>(*os);
-      os  = bos.get();
+      os = bos.get();
     }
 
     // Ask the target to add backend passes as necessary.
     if (machine->addPassesToEmitFile(pm, *os, nullptr, FileType)) {
-      report_fatal_error("target does not support generation "
-                         "of this file type!\n");
+      report_fatal_error(
+          "target does not support generation "
+          "of this file type!\n");
     }
 
     // Before executing passes, print the final values of the LLVM options.
@@ -184,9 +172,7 @@ compile(Module& m, StringRef outputPath) {
   out->keep();
 }
 
-
-static void
-link(StringRef objectFile, StringRef outputFile) {
+static void link(StringRef objectFile, StringRef outputFile) {
   auto clang = findProgramByName("clang++");
   string opt("-O");
   opt += optLevel;
@@ -216,23 +202,14 @@ link(StringRef objectFile, StringRef outputFile) {
   outs() << "\n";
 
   string err;
-  auto result = ExecuteAndWait(
-      clang.get(),
-      llvm::makeArrayRef(charArgs),
-      llvm::NoneType::None,
-      {},
-      0,
-      0,
-      &err
-    );
+  auto result = ExecuteAndWait(clang.get(), llvm::makeArrayRef(charArgs),
+                               llvm::NoneType::None, {}, 0, 0, &err);
   if (-1 == result) {
     report_fatal_error("Unable to link output file.");
   }
 }
 
-
-static void
-generateBinary(Module& m, StringRef outputFilename) {
+static void generateBinary(Module& m, StringRef outputFilename) {
   // Compiling to native should allow things to keep working even when the
   // version of clang on the system and the version of LLVM used to compile
   // the tool don't quite match up.
@@ -241,22 +218,18 @@ generateBinary(Module& m, StringRef outputFilename) {
   link(objectFile, outputFilename);
 }
 
-
-static void
-saveModule(Module const& m, StringRef filename) {
+static void saveModule(Module const& m, StringRef filename) {
   std::error_code errc;
   raw_fd_ostream out(filename.data(), errc, sys::fs::F_None);
 
   if (errc) {
-    report_fatal_error("error saving llvm module to '" + filename + "': \n"
-                       + errc.message());
+    report_fatal_error("error saving llvm module to '" + filename + "': \n" +
+                       errc.message());
   }
   WriteBitcodeToFile(m, out);
 }
 
-
-static void
-prepareLinkingPaths(SmallString<32> invocationPath) {
+static void prepareLinkingPaths(SmallString<32> invocationPath) {
   // First search the directory of the binary for the library, in case it is
   // all bundled together.
   sys::path::remove_filename(invocationPath);
@@ -280,9 +253,7 @@ prepareLinkingPaths(SmallString<32> invocationPath) {
   libraries.push_back("rt");
 }
 
-
-static void
-instrumentForDynamicCount(Module& m) {
+static void instrumentForDynamicCount(Module& m) {
   InitializeAllTargets();
   InitializeAllTargetMCs();
   InitializeAllAsmPrinters();
@@ -304,21 +275,18 @@ instrumentForDynamicCount(Module& m) {
   saveModule(m, outFile + ".callcounter.bc");
 }
 
-
 struct StaticCountPrinter : public ModulePass {
   static char ID;
   raw_ostream& out;
 
   explicit StaticCountPrinter(raw_ostream& out) : ModulePass(ID), out(out) {}
 
-  bool
-  runOnModule(Module& m) override {
+  bool runOnModule(Module& m) override {
     getAnalysis<callcounter::StaticCallCounter>().print(out, &m);
     return false;
   }
 
-  void
-  getAnalysisUsage(AnalysisUsage& au) const override {
+  void getAnalysisUsage(AnalysisUsage& au) const override {
     au.addRequired<callcounter::StaticCallCounter>();
     au.setPreservesAll();
   }
@@ -326,9 +294,7 @@ struct StaticCountPrinter : public ModulePass {
 
 char StaticCountPrinter::ID = 0;
 
-
-static void
-countStaticCalls(Module& m) {
+static void countStaticCalls(Module& m) {
   // Build up all of the passes that we want to run on the module.
   legacy::PassManager pm;
   pm.add(new callcounter::StaticCallCounter());
@@ -336,9 +302,7 @@ countStaticCalls(Module& m) {
   pm.run(m);
 }
 
-
-int
-main(int argc, char** argv) {
+int main(int argc, char** argv) {
   // This boilerplate provides convenient stack traces and clean LLVM exit
   // handling. It also initializes the built in support for convenient
   // command line option handling.

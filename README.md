@@ -25,6 +25,13 @@ Building with CMake
         cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=True \
             -DLLVM_DIR=</path/to/LLVM/build>/lib/cmake/llvm/ ../llvm-demo
 
+            I guess 
+             cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=True \
+     -DLLVM_DIR=/Users/user/Documents/GitHub/pprof/llvm-project  ../
+
+
+
+
 5. Run make inside the build directory:
 
         make
@@ -42,10 +49,11 @@ First suppose that you have a program compiled to bitcode:
 
     clang -g -c -emit-llvm ../llvm-demo/test/simpletest.c -o calls.bc
 
-Running the dynamic call printer:
+Running the dynamic call printer: (It does not work for some reason)
 
     bin/callcounter -dynamic calls.bc -o calls
     ./calls
+
 
 Running the static call printer:
 
